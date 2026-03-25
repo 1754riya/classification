@@ -333,12 +333,11 @@ HTTPException: Gemini API error: GEMINI_API_KEY is not configured
 |---------|---------|
 | FastAPI | Web framework |
 | Uvicorn | ASGI server |
-| TensorFlow/Keras | ML model inference |
+| Google Gemini client library | Gemini API access |
 | Pydantic | Request/response validation |
 | python-dotenv | Environment loading |
 | httpx | Async HTTP client (Gemini API) |
 | Pillow | Image processing |
-| NumPy | Array operations |
 
 ---
 
