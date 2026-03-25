@@ -83,6 +83,6 @@ async def analyze(file: UploadFile = File(...)) -> AnalyzeResponse:
     except GeminiServiceError as exc:
         logger.exception("Gemini pipeline failed")
         raise HTTPException(status_code=502, detail=f"Gemini API error: {exc}")
-    except Exception as exc:
+    except Exception:
         logger.exception("/analyze failed")
-        raise HTTPException(status_code=500, detail=f"Analyze failed: {exc}")
+        raise HTTPException(status_code=500, detail="Internal server error")
