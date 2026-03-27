@@ -7,14 +7,23 @@ from dotenv import load_dotenv
 from fastapi import FastAPI, File, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 
-from schemas.response_schema import AnalyzeResponse, HealthResponse
 from services.gemini_service import (
     GeminiServiceError,
     analyze_image,
     close_gemini_client,
     generate_image,
-    get_improvements,
 )
+from services.errors import UpstreamTimeoutError
+from services.groq_service import GroqServiceError, close_groq_client, get_improvements
+from schemas.response_schema import (
+    GenerateRequest,
+    GenerateResponse,
+    HealthResponse,
+    ImproveRequest,
+    ImproveResponse,
+    UploadResponse,
+)
+from storage.memory_store import ImageNotFoundError, StepOrderError, memory_store
 from utils.image_utils import MAX_FILE_SIZE_BYTES, validate_upload
 
 load_dotenv()
@@ -60,16 +69,17 @@ cors_origins, allow_creds = _parse_cors_origins()
 # ISSUE 5 FIX: Use lifespan context manager to manage AsyncClient lifecycle
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    """Manage application lifecycle: initialize shared HTTP client on startup, close on shutdown."""
-    logger.info("Starting up: initializing Gemini HTTP client")
+    """Manage application lifecycle and close shared clients on shutdown."""
+    logger.info("Starting up: API initialized")
     yield
-    logger.info("Shutting down: closing Gemini HTTP client")
+    logger.info("Shutting down: closing shared HTTP clients")
     await close_gemini_client()
+    await close_groq_client()
 
 
 app = FastAPI(
     title="Satellite Image AI Backend",
-    description="Gemini-only satellite analysis pipeline",
+    description="User-driven step-by-step satellite AI pipeline",
     version="1.0.0",
     lifespan=lifespan,
 )
@@ -85,45 +95,91 @@ app.add_middleware(
 
 @app.get("/health", response_model=HealthResponse)
 async def health() -> HealthResponse:
-    """Health check endpoint to verify API and Gemini availability."""
+    """Health check endpoint."""
+    gemini_shared = bool(
+        os.getenv("GEMINI_API_KEY")
+        or os.getenv("GEMINI_VISION_KEY")
+        or os.getenv("GEMINI_IMAGE_KEY")
+    )
     return HealthResponse(
         status="ok",
-        gemini_configured=bool(os.getenv("GEMINI_API_KEY")),
+        gemini_vision_configured=bool(os.getenv("GEMINI_VISION_KEY")),
+        gemini_image_configured=bool(os.getenv("GEMINI_IMAGE_KEY")),
+        gemini_shared_key_configured=gemini_shared,
+        groq_configured=bool(os.getenv("GROQ_API_KEY")),
     )
 
 
-@app.post("/analyze", response_model=AnalyzeResponse)
-async def analyze(file: UploadFile = File(...)) -> AnalyzeResponse:
+@app.post("/upload", response_model=UploadResponse)
+async def upload(file: UploadFile | None = File(default=None)) -> UploadResponse:
     try:
         if file is None:
             raise HTTPException(status_code=400, detail="Missing file")
 
+        logger.info("Upload received: POST /upload")
         image_bytes = await file.read()
         validate_upload(file, image_bytes, max_size_bytes=MAX_FILE_SIZE_BYTES)
-        logger.info("Image received: filename=%s size_bytes=%d", file.filename, len(image_bytes))
-
-        logger.info("Gemini step 1: analyze_image")
         step1 = await analyze_image(image_bytes)
-
-        logger.info("Gemini step 2: get_improvements")
-        step2 = await get_improvements(step1)
-
-        logger.info("Gemini step 3: generate_image")
-        generated_image = await generate_image(image_bytes, step2["improvements"])
-
-        logger.info("Analyze completed successfully")
-        return AnalyzeResponse(
-            classification=step1["classification"],
-            features=step1["features"],
-            description=step1["description"],
-            improvements=step2["improvements"],
-            generated_image=generated_image,
-        )
+        image_id = await memory_store.create_entry(image_bytes=image_bytes, step1=step1)
+        logger.info("Step 1 completed: image_id=%s classification=%s", image_id, step1["classification"])
+        return UploadResponse(image_id=image_id, **step1)
     except HTTPException:
         raise
     except GeminiServiceError as exc:
-        logger.exception("Gemini pipeline failed")
+        logger.exception("Gemini Step 1 failed")
         raise HTTPException(status_code=502, detail=f"Gemini API error: {exc}")
+    except UpstreamTimeoutError as exc:
+        logger.exception("Upstream timeout during Step 1")
+        raise HTTPException(status_code=504, detail=f"Upstream timeout: {exc}")
     except Exception:
-        logger.exception("/analyze failed")
+        logger.exception("/upload failed")
+        raise HTTPException(status_code=500, detail="Internal server error")
+
+
+@app.post("/improve", response_model=ImproveResponse)
+async def improve(payload: ImproveRequest) -> ImproveResponse:
+    try:
+        step1 = await memory_store.get_step1(payload.image_id)
+        step2 = await get_improvements(step1)
+        await memory_store.save_step2(payload.image_id, step2)
+        logger.info("Step 2 completed: image_id=%s improvements_count=%d", payload.image_id, len(step2["improvements"]))
+        return ImproveResponse(image_id=payload.image_id, improvements=step2["improvements"])
+    except ImageNotFoundError as exc:
+        logger.warning("Step 2 failed: invalid image_id=%s", payload.image_id)
+        raise HTTPException(status_code=404, detail=str(exc))
+    except StepOrderError as exc:
+        logger.warning("Step 2 failed: step order violation image_id=%s detail=%s", payload.image_id, str(exc))
+        raise HTTPException(status_code=409, detail=str(exc))
+    except GroqServiceError as exc:
+        logger.exception("Groq Step 2 failed")
+        raise HTTPException(status_code=502, detail=f"Groq API error: {exc}")
+    except UpstreamTimeoutError as exc:
+        logger.exception("Upstream timeout during Step 2")
+        raise HTTPException(status_code=504, detail=f"Upstream timeout: {exc}")
+    except Exception:
+        logger.exception("/improve failed")
+        raise HTTPException(status_code=500, detail="Internal server error")
+
+
+@app.post("/generate", response_model=GenerateResponse)
+async def generate(payload: GenerateRequest) -> GenerateResponse:
+    try:
+        image_bytes, improvements = await memory_store.get_for_generation(payload.image_id)
+        generated_image = await generate_image(image_bytes, improvements)
+        logger.info("Step 3 completed: image_id=%s generated_image_length=%d", payload.image_id, len(generated_image))
+        return GenerateResponse(image_id=payload.image_id, generated_image=generated_image)
+    except ImageNotFoundError as exc:
+        logger.warning("Step 3 failed: invalid image_id=%s", payload.image_id)
+        raise HTTPException(status_code=404, detail=str(exc))
+    except StepOrderError as exc:
+        logger.warning("Step 3 failed: step order violation image_id=%s detail=%s", payload.image_id, str(exc))
+        raise HTTPException(status_code=409, detail=str(exc))
+    except GeminiServiceError as exc:
+        logger.exception("Gemini Step 3 failed")
+        raise HTTPException(status_code=502, detail=f"Gemini API error: {exc}")
+    except UpstreamTimeoutError as exc:
+        logger.exception("Upstream timeout during Step 3")
+        raise HTTPException(status_code=504, detail=f"Upstream timeout: {exc}")
+    except Exception:
+        logger.exception("/generate failed")
         raise HTTPException(status_code=500, detail="Internal server error")

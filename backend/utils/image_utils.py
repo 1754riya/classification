@@ -20,6 +20,10 @@ ALLOWED_IMAGE_FORMATS = {"JPEG", "PNG", "TIFF"}
 MAX_FILE_SIZE_BYTES = 15 * 1024 * 1024
 
 
+def allowed_upload_types_message() -> str:
+    return "Unsupported file format. Only JPG/JPEG, PNG, TIF/TIFF allowed."
+
+
 def validate_upload(file: UploadFile, data: bytes, max_size_bytes: int = MAX_FILE_SIZE_BYTES) -> None:
     """Validate uploaded file with strict format checks.
     
@@ -47,21 +51,21 @@ def validate_upload(file: UploadFile, data: bytes, max_size_bytes: int = MAX_FIL
         logger.warning("Validation failed: both content_type and filename are missing")
         raise HTTPException(
             status_code=400, 
-            detail="Unsupported file format. Only JPG, PNG, TIFF allowed."
+            detail=allowed_upload_types_message(),
         )
 
     if content_type and content_type not in ALLOWED_MIME_TYPES:
         logger.warning("Validation failed: unsupported mime type (content_type=%s)", content_type)
         raise HTTPException(
             status_code=400, 
-            detail="Unsupported file format. Only JPG, PNG, TIFF allowed."
+            detail=allowed_upload_types_message(),
         )
 
     if suffix and suffix not in ALLOWED_EXTENSIONS:
         logger.warning("Validation failed: unsupported extension (suffix=%s)", suffix)
         raise HTTPException(
             status_code=400, 
-            detail="Unsupported file format. Only JPG, PNG, TIFF allowed."
+            detail=allowed_upload_types_message(),
         )
 
     try:
@@ -75,7 +79,7 @@ def validate_upload(file: UploadFile, data: bytes, max_size_bytes: int = MAX_FIL
                 )
                 raise HTTPException(
                     status_code=400, 
-                    detail="Unsupported file format. Only JPG, PNG, TIFF allowed."
+                    detail=allowed_upload_types_message(),
                 )
             image.verify()
     except HTTPException:
@@ -95,3 +99,10 @@ def image_bytes_to_png_bytes(image_bytes: bytes) -> bytes:
 
 def encode_bytes_to_base64(data: bytes) -> str:
     return base64.b64encode(data).decode("utf-8")
+
+
+def decode_base64_to_bytes(data_b64: str) -> bytes:
+    try:
+        return base64.b64decode(data_b64, validate=True)
+    except Exception as exc:
+        raise ValueError("Invalid base64 input") from exc
