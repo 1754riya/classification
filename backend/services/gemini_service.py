@@ -1,5 +1,6 @@
 import json
 import logging
+import math
 import os
 from asyncio import Lock, sleep
 from typing import Any
@@ -7,6 +8,7 @@ from typing import Any
 import httpx
 from dotenv import load_dotenv
 
+from services.errors import UpstreamTimeoutError
 from utils.image_utils import encode_bytes_to_base64, image_bytes_to_png_bytes
 
 load_dotenv()
@@ -45,8 +47,19 @@ class GeminiServiceError(Exception):
     pass
 
 
-class UpstreamTimeoutError(Exception):
-    pass
+def _validate_feature_coordinates(feature: dict[str, Any], index: int) -> None:
+    coordinates = feature.get("coordinates")
+    if not isinstance(coordinates, list) or len(coordinates) != 4:
+        logger.error("Invalid coordinates shape for feature index=%d", index)
+        raise GeminiServiceError("Feature 'coordinates' must be [x, y, width, height]")
+
+    for coordinate in coordinates:
+        if isinstance(coordinate, bool) or not isinstance(coordinate, (int, float)):
+            logger.error("Invalid coordinate type for feature index=%d type=%s", index, type(coordinate).__name__)
+            raise GeminiServiceError("Feature coordinates must be int or float values")
+        if not math.isfinite(float(coordinate)):
+            logger.error("Non-finite coordinate for feature index=%d", index)
+            raise GeminiServiceError("Feature coordinates must be finite numeric values")
 
 
 def _extract_first_text(response_json: dict[str, Any]) -> str:
@@ -233,14 +246,12 @@ async def analyze_image(image_bytes: bytes) -> dict[str, Any]:
     if not isinstance(parsed.get("features"), list):
         raise GeminiServiceError("Gemini analysis response has invalid 'features' type")
 
-    for feature in parsed["features"]:
+    for index, feature in enumerate(parsed["features"]):
         if not isinstance(feature, dict):
             raise GeminiServiceError("Each feature must be an object")
         if "name" not in feature or "coordinates" not in feature:
             raise GeminiServiceError("Each feature must include 'name' and 'coordinates'")
-        coordinates = feature.get("coordinates")
-        if not isinstance(coordinates, list) or len(coordinates) != 4:
-            raise GeminiServiceError("Feature 'coordinates' must be [x, y, width, height]")
+        _validate_feature_coordinates(feature, index)
 
     return parsed
 

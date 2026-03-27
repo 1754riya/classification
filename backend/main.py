@@ -6,16 +6,23 @@ from pathlib import Path
 from dotenv import load_dotenv
 from fastapi import FastAPI, File, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
-from pydantic import BaseModel, Field
 
 from services.gemini_service import (
     GeminiServiceError,
-    UpstreamTimeoutError,
     analyze_image,
     close_gemini_client,
     generate_image,
 )
+from services.errors import UpstreamTimeoutError
 from services.groq_service import GroqServiceError, close_groq_client, get_improvements
+from schemas.response_schema import (
+    GenerateRequest,
+    GenerateResponse,
+    HealthResponse,
+    ImproveRequest,
+    ImproveResponse,
+    UploadResponse,
+)
 from storage.memory_store import ImageNotFoundError, StepOrderError, memory_store
 from utils.image_utils import MAX_FILE_SIZE_BYTES, validate_upload
 
@@ -35,44 +42,6 @@ logging.basicConfig(
     ],
 )
 logger = logging.getLogger("satellite-backend")
-
-
-class Feature(BaseModel):
-    name: str
-    coordinates: list[float] = Field(..., min_length=4, max_length=4)
-
-
-class UploadResponse(BaseModel):
-    image_id: str
-    classification: str
-    features: list[Feature]
-    description: str
-
-
-class ImproveRequest(BaseModel):
-    image_id: str
-
-
-class ImproveResponse(BaseModel):
-    image_id: str
-    improvements: list[str]
-
-
-class GenerateRequest(BaseModel):
-    image_id: str
-
-
-class GenerateResponse(BaseModel):
-    image_id: str
-    generated_image: str = Field(..., description="Base64 encoded generated image")
-
-
-class HealthResponse(BaseModel):
-    status: str
-    gemini_vision_configured: bool
-    gemini_image_configured: bool
-    gemini_shared_key_configured: bool
-    groq_configured: bool
 
 
 # ISSUE 4 FIX: Proper CORS configuration with secure credentials handling
@@ -137,7 +106,7 @@ async def health() -> HealthResponse:
         gemini_vision_configured=bool(os.getenv("GEMINI_VISION_KEY")),
         gemini_image_configured=bool(os.getenv("GEMINI_IMAGE_KEY")),
         gemini_shared_key_configured=gemini_shared,
-        groq_configured=bool(os.getenv("GROQ_KEY")),
+        groq_configured=bool(os.getenv("GROQ_API_KEY")),
     )
 
 
@@ -176,8 +145,10 @@ async def improve(payload: ImproveRequest) -> ImproveResponse:
         logger.info("Step 2 completed: image_id=%s improvements_count=%d", payload.image_id, len(step2["improvements"]))
         return ImproveResponse(image_id=payload.image_id, improvements=step2["improvements"])
     except ImageNotFoundError as exc:
+        logger.warning("Step 2 failed: invalid image_id=%s", payload.image_id)
         raise HTTPException(status_code=404, detail=str(exc))
     except StepOrderError as exc:
+        logger.warning("Step 2 failed: step order violation image_id=%s detail=%s", payload.image_id, str(exc))
         raise HTTPException(status_code=409, detail=str(exc))
     except GroqServiceError as exc:
         logger.exception("Groq Step 2 failed")
@@ -198,8 +169,10 @@ async def generate(payload: GenerateRequest) -> GenerateResponse:
         logger.info("Step 3 completed: image_id=%s generated_image_length=%d", payload.image_id, len(generated_image))
         return GenerateResponse(image_id=payload.image_id, generated_image=generated_image)
     except ImageNotFoundError as exc:
+        logger.warning("Step 3 failed: invalid image_id=%s", payload.image_id)
         raise HTTPException(status_code=404, detail=str(exc))
     except StepOrderError as exc:
+        logger.warning("Step 3 failed: step order violation image_id=%s detail=%s", payload.image_id, str(exc))
         raise HTTPException(status_code=409, detail=str(exc))
     except GeminiServiceError as exc:
         logger.exception("Gemini Step 3 failed")
