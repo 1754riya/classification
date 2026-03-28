@@ -8,7 +8,7 @@ import httpx
 logger = logging.getLogger(__name__)
 
 GROQ_API_KEY = os.getenv("GROQ_API_KEY", "")
-GROQ_MODEL = os.getenv("GROQ_MODEL", "llama3-8b-8192")
+GROQ_MODEL = os.getenv("GROQ_MODEL", "llama-4-scout-17b-16e-instruct")
 GROQ_URL = "https://api.groq.com/openai/v1/chat/completions"
 
 _client = httpx.AsyncClient(timeout=60.0)
