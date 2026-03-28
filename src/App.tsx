@@ -339,11 +339,19 @@ export default function App() {
         )}
 
         {/* ERROR */}
-        {error && <div className="error-banner" role="alert">{error}</div>}
+        {error && (
+          <div className="error-banner" role="alert">
+            <ErrorIcon />
+            <span>{error}</span>
+          </div>
+        )}
       </main>
 
       <footer className="app-footer">
-        Powered by <a href="https://developer.puter.com" target="_blank" rel="noreferrer">Puter</a>
+        Powered by{' '}
+        <a href="https://developer.puter.com" target="_blank" rel="noreferrer">
+          Puter
+        </a>
       </footer>
     </div>
   )
@@ -368,6 +376,17 @@ function ScanIcon() {
       stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
       <path d="M3 7V5a2 2 0 0 1 2-2h2M17 3h2a2 2 0 0 1 2 2v2M21 17v2a2 2 0 0 1-2 2h-2M7 21H5a2 2 0 0 1-2-2v-2" />
       <rect x="7" y="7" width="10" height="10" rx="1" />
+    </svg>
+  )
+}
+
+function ErrorIcon() {
+  return (
+    <svg width="15" height="15" viewBox="0 0 24 24" fill="none"
+      stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+      <circle cx="12" cy="12" r="10" />
+      <line x1="12" y1="8" x2="12" y2="12" />
+      <line x1="12" y1="16" x2="12.01" y2="16" />
     </svg>
   )
 }
