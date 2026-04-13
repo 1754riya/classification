@@ -1,143 +1,279 @@
-import { useState, useRef, useCallback } from 'react'
+import { useRef } from 'react'
 import './App.css'
 
-type Status = 'idle' | 'dragging' | 'loading' | 'done' | 'error'
-
-const API = '/predict'
+import { usePipeline } from './hooks/usePipeline'
+import { useChat } from './hooks/useChat'
+import SidePanel from './components/SidePanel'
+import {
+  SatelliteIcon, ScanIcon, LightbulbIcon, SparkleIcon,
+  CheckIcon, DownloadIcon, ErrorIcon, ChatIcon, CloseIcon, Spinner,
+} from './components/Icons'
+import { STEP_INDEX } from './lib/types'
 
 export default function App() {
-  const [status, setStatus]       = useState<Status>('idle')
-  const [original, setOriginal]   = useState<string | null>(null)
-  const [result, setResult]       = useState<string | null>(null)
-  const [errorMsg, setErrorMsg]   = useState('')
-  const inputRef                  = useRef<HTMLInputElement>(null)
+  const {
+    stage, imageUrl, analysis, suggestions, generatedUrl, error,
+    handleFile, runAnalyze, runSuggest, runImagine, reset,
+  } = usePipeline()
 
-  const process = useCallback(async (file: File) => {
-    if (!file.type.startsWith('image/')) {
-      setErrorMsg('Please upload an image file.')
-      setStatus('error')
-      return
-    }
+  const {
+    chatOpen, setChatOpen, messages, chatInput, setChatInput,
+    chatLoading, messagesEndRef, sendMessage, resetChat,
+  } = useChat(analysis, suggestions)
 
-    setOriginal(URL.createObjectURL(file))
-    setResult(null)
-    setStatus('loading')
+  const inputRef = useRef<HTMLInputElement | null>(null)
+  const stepNum = STEP_INDEX[stage]
+  const showChat = suggestions !== null
 
-    const form = new FormData()
-    form.append('file', file)
-
-    try {
-      const res = await fetch(API, { method: 'POST', body: form })
-      if (!res.ok) throw new Error(`Server error: ${res.status}`)
-      const blob = await res.blob()
-      setResult(URL.createObjectURL(blob))
-      setStatus('done')
-    } catch (e: unknown) {
-      setErrorMsg(e instanceof Error ? e.message : 'Unknown error')
-      setStatus('error')
-    }
-  }, [])
-
-  const onFile = (e: React.ChangeEvent<HTMLInputElement>) => {
-    const file = e.target.files?.[0]
-    if (file) process(file)
-  }
-
-  const onDrop = (e: React.DragEvent) => {
-    e.preventDefault()
-    setStatus('idle')
-    const file = e.dataTransfer.files[0]
-    if (file) process(file)
-  }
-
-  const reset = () => {
-    setStatus('idle')
-    setOriginal(null)
-    setResult(null)
-    if (inputRef.current) inputRef.current.value = ''
-  }
+  const handleReset = () => { reset(); resetChat() }
 
   return (
-    <main>
-      <header>
-        <h1>Satellite Segmentation</h1>
-        <p>Upload a satellite image to generate a segmentation mask</p>
+    <div className="app">
+
+      {/* ── Header ── */}
+      <header className="app-header">
+        <div className="header-glow" aria-hidden="true" />
+        <div className="logo">
+          <SatelliteIcon size={22} />
+          <span>Super<strong>Net</strong></span>
+        </div>
+        <p className="tagline">AI-powered satellite image intelligence</p>
       </header>
 
-      {/* Drop zone — shown when idle or after error */}
-      {(status === 'idle' || status === 'dragging' || status === 'error') && (
-        <div
-          className={`dropzone${status === 'dragging' ? ' dragging' : ''}`}
-          onClick={() => inputRef.current?.click()}
-          onDragOver={(e) => { e.preventDefault(); setStatus('dragging') }}
-          onDragLeave={() => setStatus('idle')}
-          onDrop={onDrop}
-        >
-          <input
-            ref={inputRef}
-            type="file"
-            accept="image/*"
-            hidden
-            onChange={onFile}
+      {/* ── Step Indicator ── */}
+      <nav className="stepper" aria-label="Pipeline steps">
+        {(['Analyze', 'Suggest', 'Imagine'] as const).map((label, i) => (
+          <div key={label} className={`step ${stepNum > i + 1 ? 'done' : stepNum === i + 1 ? 'active' : ''}`}>
+            <div className="step-dot" aria-label={`Step ${i + 1}: ${label}`}>
+              {stepNum > i + 1 ? <CheckIcon /> : <span>{i + 1}</span>}
+            </div>
+            <span className="step-label">{label}</span>
+            {i < 2 && <div className={`step-line ${stepNum > i + 2 ? 'filled' : ''}`} />}
+          </div>
+        ))}
+      </nav>
+
+      {/* ── Body ── */}
+      <div className="app-body">
+        <main className="content">
+          <UploadZone
+            show={stage === 'upload' && !imageUrl}
+            inputRef={inputRef}
+            onFile={handleFile}
           />
-          <UploadIcon />
-          <span>Drop an image here, or <u>browse</u></span>
-          <small>PNG, JPG, TIF supported</small>
-          {status === 'error' && <p className="error-msg">{errorMsg}</p>}
-        </div>
-      )}
 
-      {/* Loading */}
-      {status === 'loading' && (
-        <div className="state-box">
-          <Spinner />
-          <p>Running segmentation…</p>
-        </div>
-      )}
+          <PreviewPanel
+            show={stage === 'upload' && !!imageUrl}
+            imageUrl={imageUrl}
+            onAnalyze={runAnalyze}
+            onReset={handleReset}
+          />
 
-      {/* Results */}
-      {(status === 'done' || (status === 'loading' && original)) && (
-        <div className="results">
-          <div className="panel">
-            <label>Original</label>
-            {original && <img src={original} alt="Original satellite image" />}
-          </div>
-          <div className="divider" />
-          <div className="panel">
-            <label>Segmentation mask</label>
-            {status === 'loading'
-              ? <div className="img-placeholder"><Spinner /></div>
-              : result && <img src={result} alt="Segmentation result" />
-            }
-          </div>
-        </div>
-      )}
+          <AnalyzingPanel show={stage === 'analyzing'} imageUrl={imageUrl} />
 
-      {status === 'done' && (
-        <div className="actions">
-          <a className="btn-secondary" href={result!} download="mask.png">
-            Download mask
-          </a>
-          <button className="btn-primary" onClick={reset}>
-            Upload another
-          </button>
-        </div>
+          <AnalysisCard
+            show={!!analysis && stage !== 'upload' && stage !== 'analyzing'}
+            imageUrl={imageUrl}
+            analysis={analysis}
+            stage={stage}
+            onSuggest={runSuggest}
+          />
+
+          <SuggestionsPanel
+            show={!!suggestions && !['upload','analyzing','analyzed','suggesting'].includes(stage)}
+            suggestions={suggestions}
+            stage={stage}
+            onImagine={runImagine}
+          />
+
+          <ComparePanel
+            show={!!generatedUrl && stage === 'done'}
+            imageUrl={imageUrl}
+            generatedUrl={generatedUrl}
+            onReset={handleReset}
+          />
+
+          {error && (
+            <div className="error-banner" role="alert"><ErrorIcon /><span>{error}</span></div>
+          )}
+        </main>
+
+        {showChat && (
+          <SidePanel
+            open={chatOpen}
+            messages={messages}
+            chatInput={chatInput}
+            chatLoading={chatLoading}
+            messagesEndRef={messagesEndRef}
+            onClose={() => setChatOpen(false)}
+            onInputChange={setChatInput}
+            onSend={sendMessage}
+          />
+        )}
+      </div>
+
+      <footer className="app-footer">
+        © 2025 SuperNet · AI Satellite Intelligence
+      </footer>
+
+      {showChat && (
+        <button
+          className={`chat-fab${chatOpen ? ' active' : ''}`}
+          onClick={() => setChatOpen(o => !o)}
+          aria-label={chatOpen ? 'Close chat' : 'Ask AI about improvements'}
+        >
+          {chatOpen ? <CloseIcon /> : <ChatIcon />}
+        </button>
       )}
-    </main>
+    </div>
   )
 }
 
-function UploadIcon() {
+/* ── Sub-components ──────────────────────────────────────────────── */
+
+function UploadZone({ show, inputRef, onFile }: {
+  show: boolean
+  inputRef: React.RefObject<HTMLInputElement | null>
+  onFile: (f: File) => void
+}) {
+  if (!show) return null
   return (
-    <svg width="40" height="40" viewBox="0 0 24 24" fill="none"
-      stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
-      <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/>
-      <polyline points="17 8 12 3 7 8"/>
-      <line x1="12" y1="3" x2="12" y2="15"/>
-    </svg>
+    <div
+      className="dropzone"
+      role="button" tabIndex={0} aria-label="Upload satellite image"
+      onClick={() => inputRef.current?.click()}
+      onKeyDown={e => e.key === 'Enter' && inputRef.current?.click()}
+      onDragOver={e => e.preventDefault()}
+      onDrop={e => { e.preventDefault(); const f = e.dataTransfer.files[0]; if (f) onFile(f) }}
+    >
+      <input ref={inputRef} type="file" accept="image/*" hidden
+        onChange={e => { const f = e.target.files?.[0]; if (f) onFile(f) }} />
+      <div className="drop-icon"><SatelliteIcon size={44} /></div>
+      <p className="drop-title">Drop a satellite image here</p>
+      <p className="drop-sub">or <u>browse files</u> · JPG, PNG, TIF supported</p>
+      <div className="drop-grid" aria-hidden="true" />
+    </div>
   )
 }
 
-function Spinner() {
-  return <div className="spinner" aria-label="Loading" />
+function PreviewPanel({ show, imageUrl, onAnalyze, onReset }: {
+  show: boolean; imageUrl: string | null; onAnalyze: () => void; onReset: () => void
+}) {
+  if (!show || !imageUrl) return null
+  return (
+    <div className="preview-panel">
+      <div className="img-wrap">
+        <img src={imageUrl} alt="Uploaded satellite" className="satellite-img" />
+        <div className="grid-overlay" aria-hidden="true" />
+        <div className="img-coords" aria-hidden="true">
+          <span>LAT 28.61°N</span><span>LNG 77.20°E</span>
+        </div>
+      </div>
+      <div className="preview-actions">
+        <button className="btn-primary" onClick={onAnalyze}><ScanIcon /> Analyze Image</button>
+        <button className="btn-ghost" onClick={onReset}>Change file</button>
+      </div>
+    </div>
+  )
+}
+
+function AnalyzingPanel({ show, imageUrl }: { show: boolean; imageUrl: string | null }) {
+  if (!show || !imageUrl) return null
+  return (
+    <div className="preview-panel">
+      <div className="img-wrap scanning">
+        <img src={imageUrl} alt="Analyzing…" className="satellite-img" />
+        <div className="grid-overlay" aria-hidden="true" />
+        <div className="scan-line" aria-hidden="true" />
+      </div>
+      <div className="status-row"><Spinner /><span>Scanning satellite data…</span></div>
+    </div>
+  )
+}
+
+function AnalysisCard({ show, imageUrl, analysis, stage, onSuggest }: {
+  show: boolean; imageUrl: string | null; analysis: any; stage: string; onSuggest: () => void
+}) {
+  if (!show || !analysis) return null
+  return (
+    <>
+      <div className="results-grid">
+        <div className="img-wrap img-wrap--fill">
+          {imageUrl && <img src={imageUrl} alt="Original satellite" className="satellite-img satellite-img--fill" />}
+          <div className="grid-overlay" aria-hidden="true" />
+          <div className="img-badge">Original</div>
+        </div>
+        <div className="analysis-card">
+          <div className="card-tag">Classification</div>
+          <h2 className="classification">{analysis.classification}</h2>
+          <p className="description">{analysis.description}</p>
+          <div className="objects-label">Detected Features</div>
+          <div className="objects-list">
+            {analysis.objects.map((obj: string, i: number) => <span key={i} className="obj-chip">{obj}</span>)}
+          </div>
+          <div className="card-footer">
+            {stage === 'analyzed' && (
+              <button className="btn-primary" onClick={onSuggest}><LightbulbIcon /> Get Suggestions</button>
+            )}
+            {stage === 'suggesting' && (
+              <div className="status-row"><Spinner /><span>Generating urban planning suggestions…</span></div>
+            )}
+          </div>
+        </div>
+      </div>
+    </>
+  )
+}
+
+function SuggestionsPanel({ show, suggestions, stage, onImagine }: {
+  show: boolean; suggestions: string[] | null; stage: string; onImagine: () => void
+}) {
+  if (!show || !suggestions) return null
+  return (
+    <div className="suggestions-section">
+      <div className="section-header"><LightbulbIcon /><h3>Urban Planning Suggestions</h3></div>
+      <div className="suggestions-grid">
+        {suggestions.map((s, i) => (
+          <div key={i} className="suggestion-card" style={{ animationDelay: `${i * 40}ms` }}>
+            <span className="s-num">0{i + 1}</span>
+            <p>{s}</p>
+          </div>
+        ))}
+      </div>
+      {stage === 'suggested' && (
+        <button className="btn-primary btn-teal" onClick={onImagine}><SparkleIcon /> Imagine the Future</button>
+      )}
+      {stage === 'imagining' && (
+        <div className="status-row"><Spinner teal /><span>Generating future vision…</span></div>
+      )}
+    </div>
+  )
+}
+
+function ComparePanel({ show, imageUrl, generatedUrl, onReset }: {
+  show: boolean; imageUrl: string | null; generatedUrl: string | null; onReset: () => void
+}) {
+  if (!show || !generatedUrl) return null
+  return (
+    <div className="compare-section">
+      <div className="section-header"><SparkleIcon /><h3>Future Vision</h3></div>
+      <div className="compare-grid">
+        <div className="compare-panel">
+          <div className="compare-label">Current State</div>
+          {imageUrl && <img src={imageUrl} alt="Original" className="compare-img" />}
+        </div>
+        <div className="compare-arrow" aria-hidden="true">→</div>
+        <div className="compare-panel">
+          <div className="compare-label teal">Future Vision</div>
+          <img src={generatedUrl} alt="AI-generated improved city" className="compare-img generated" />
+        </div>
+      </div>
+      <div className="final-actions">
+        <a className="btn-secondary" href={generatedUrl} download="supernet-vision.png">
+          <DownloadIcon /> Download
+        </a>
+        <button className="btn-primary" onClick={onReset}>Analyze Another</button>
+      </div>
+    </div>
+  )
 }
